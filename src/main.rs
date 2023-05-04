@@ -7,75 +7,73 @@ use rand::random;
 
 const IMAGE_SIZE: usize = 28 * 28;
 
-#[derive(Debug, Clone, Copy)]
-struct Edge {
-    weight: u8,
-    bias: u8,
+struct Node<const INPUT_SIZE: usize> {
+    weights: [i8; INPUT_SIZE],
+    bias: i8,
 }
 
-impl Edge {
+impl<const INPUT_SIZE: usize> Node<INPUT_SIZE> {
     fn new() -> Self {
         Self {
-            weight: random(),
+            weights: array::from_fn(|_| random()),
             bias: random(),
         }
     }
+    fn compute(&self, input: &[u8; INPUT_SIZE]) -> u8 {
+        let sum: i32 = input
+            .iter()
+            .zip(&self.weights)
+            .map(|(&input, &weight)| input as i32 * weight as i32)
+            .sum();
+        let mean = sum / INPUT_SIZE as i32;
+        (mean + self.bias as i32).max(0) as u8
+    }
 }
 
-fn compute_node<const INPUT_SIZE: usize>(
-    input: &[u8; INPUT_SIZE],
-    edges: &[Edge; INPUT_SIZE],
-) -> u8 {
-    let sum: usize = input
-        .iter()
-        .zip(edges.iter())
-        .map(|(&i, e)| {
-            let weighted = i as u16 * e.weight as u16 / 255u16;
-            let biased = weighted + e.bias as u16;
-            (biased / 2) as u8
-        } as usize)
-        .sum();
-    let mean = (sum / INPUT_SIZE) as u8;
-    mean.saturating_sub(127) * 2 // activation
+struct Layer<const INPUT_SIZE: usize, const OUTPUT_SIZE: usize> {
+    nodes: [Node<INPUT_SIZE>; OUTPUT_SIZE],
 }
 
-fn compute_layer<const INPUT_SIZE: usize, const OUTPUT_SIZE: usize>(
-    input: &[u8; INPUT_SIZE],
-    edges: &[[Edge; INPUT_SIZE]; OUTPUT_SIZE],
-) -> [u8; OUTPUT_SIZE] {
-    let mut output = [0u8; OUTPUT_SIZE];
-    output.iter_mut().zip(edges).for_each(|(node, edges)| {
-        *node = compute_node(input, edges);
-    });
-    output
+impl<const INPUT_SIZE: usize, const OUTPUT_SIZE: usize> Layer<INPUT_SIZE, OUTPUT_SIZE> {
+    fn new() -> Self {
+        Self {
+            nodes: array::from_fn(|_| Node::new()),
+        }
+    }
+    fn compute(&self, input: &[u8; INPUT_SIZE]) -> [u8; OUTPUT_SIZE] {
+        let mut output = [0u8; OUTPUT_SIZE];
+        output.iter_mut().zip(&self.nodes).for_each(|(out, node)| {
+            *out = node.compute(input);
+        });
+        output
+    }
 }
 
 fn output_layer_is_correct(output: &[u8; 10], label: u8) -> bool {
     output.iter().position_max().unwrap() == label as usize
 }
 
-#[derive(Debug, Clone)]
 struct NN<const LAYER_SIZE: usize, const HIDDEN_LAYERS: usize> {
-    input_layer: [[Edge; IMAGE_SIZE]; LAYER_SIZE],
-    hidden_layers: [[[Edge; LAYER_SIZE]; LAYER_SIZE]; HIDDEN_LAYERS],
-    output_layer: [[Edge; LAYER_SIZE]; 10],
+    input_layer: Layer<IMAGE_SIZE, LAYER_SIZE>,
+    hidden_layers: [Layer<LAYER_SIZE, LAYER_SIZE>; HIDDEN_LAYERS],
+    output_layer: Layer<LAYER_SIZE, 10>,
 }
 
 impl<const LAYER_SIZE: usize, const HIDDEN_LAYERS: usize> NN<LAYER_SIZE, HIDDEN_LAYERS> {
     fn new() -> Self {
         Self {
-            input_layer: array::from_fn(|_| array::from_fn(|_| Edge::new())),
-            hidden_layers: array::from_fn(|_| array::from_fn(|_| array::from_fn(|_| Edge::new()))),
-            output_layer: array::from_fn(|_| array::from_fn(|_| Edge::new())),
+            input_layer: Layer::new(),
+            hidden_layers: array::from_fn(|_| Layer::new()),
+            output_layer: Layer::new(),
         }
     }
     fn compute(&self, input: &[u8; IMAGE_SIZE]) -> [u8; 10] {
-        let input_layer = compute_layer(input, &self.input_layer);
-        let last_hidden_layer = self
+        let input_layer_activation = self.input_layer.compute(input);
+        let last_hidden_layer_activation = self
             .hidden_layers
             .iter()
-            .fold(input_layer, |input, edges| compute_layer(&input, edges));
-        compute_layer(&last_hidden_layer, &self.output_layer)
+            .fold(input_layer_activation, |input, layer| layer.compute(&input));
+        self.output_layer.compute(&last_hidden_layer_activation)
     }
 }
 
