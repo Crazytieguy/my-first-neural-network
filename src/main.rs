@@ -7,11 +7,12 @@ use std::array;
 
 use indicatif::ProgressBar;
 use itertools::Itertools;
-use rand::{random, seq::SliceRandom};
+use rand::{seq::SliceRandom, Rng};
 
 const IMAGE_SIZE: usize = 28 * 28;
 const LEARNING_RATE: f32 = 0.1;
 
+#[derive(Debug)]
 struct Node<const INPUT_SIZE: usize> {
     weights: [f32; INPUT_SIZE],
     bias: f32,
@@ -26,8 +27,8 @@ impl<const INPUT_SIZE: usize> Node<INPUT_SIZE> {
     }
     fn random() -> Self {
         Self {
-            weights: array::from_fn(|_| random()),
-            bias: random(),
+            weights: array::from_fn(|_| rand::thread_rng().gen_range((-1.)..1.)),
+            bias: rand::thread_rng().gen_range((-1.)..1.),
         }
     }
     fn compute(&self, input: &[f32; INPUT_SIZE]) -> f32 {
@@ -40,21 +41,23 @@ impl<const INPUT_SIZE: usize> Node<INPUT_SIZE> {
     }
     fn update(&mut self, input: &[f32; INPUT_SIZE], error: f32) {
         self.bias -= LEARNING_RATE * error;
+        let input_sum: f32 = input.iter().filter(|&&v| v > 0.).sum();
         self.weights
             .iter_mut()
             .zip_eq(input)
+            .filter(|(_, &input)| input > 0.)
             .for_each(|(weight, &input)| {
-                *weight -= input.max(0.) * LEARNING_RATE * error;
+                *weight -= LEARNING_RATE * input * error / input_sum;
             });
     }
-    fn flush_updates(&mut self, updates: &mut Self) {
-        self.bias += updates.bias;
+    fn flush_updates(&mut self, updates: &mut Self, batch_size: u16) {
+        self.bias += updates.bias / f32::from(batch_size);
         updates.bias = 0.;
         self.weights
             .iter_mut()
             .zip_eq(&mut updates.weights)
             .for_each(|(weight, update)| {
-                *weight += *update;
+                *weight += *update / f32::from(batch_size);
                 *update = 0.;
             });
     }
@@ -93,12 +96,12 @@ impl<const INPUT_SIZE: usize, const OUTPUT_SIZE: usize> Layer<INPUT_SIZE, OUTPUT
                 node.update(input, *error);
             });
     }
-    fn flush_updates(&mut self, updates: &mut Self) {
+    fn flush_updates(&mut self, updates: &mut Self, batch_size: u16) {
         self.nodes
             .iter_mut()
             .zip_eq(&mut updates.nodes)
             .for_each(|(node, update)| {
-                node.flush_updates(update);
+                node.flush_updates(update, batch_size);
             });
     }
 }
@@ -109,6 +112,7 @@ struct NeuralNet<const LAYER_SIZE: usize, const MIDDLE_LAYERS: usize> {
     output_layer: Layer<LAYER_SIZE, 10>,
 }
 
+#[derive(Debug)]
 struct Activations<const LAYER_SIZE: usize, const HIDDEN_LAYERS: usize> {
     hidden_layers: [[f32; LAYER_SIZE]; HIDDEN_LAYERS],
     output_layer: [f32; 10],
@@ -148,16 +152,18 @@ where
         data.shuffle(&mut rand::thread_rng());
         let bar = ProgressBar::new((data.len() * epochs) as u64 / 100);
         for _ in 0..epochs {
-            for (n, &(label, input)) in data.iter().enumerate() {
-                if n % 100 == 99 {
-                    net.flush_updates(&mut updates);
-                    bar.inc(1);
+            for chunk in data.chunks(100) {
+                for &(label, input) in chunk {
+                    let activations = net.compute(input);
+                    let errors = net.errors(&activations, label);
+                    updates.update(input, &activations, &errors);
                 }
-                let activations = net.compute(input);
-                let errors = net.errors(&activations, label);
-                updates.update(input, &activations, &errors);
+                net.flush_updates(
+                    &mut updates,
+                    u16::try_from(chunk.len()).expect("chunk size overflows u16"),
+                );
+                bar.inc(1);
             }
-            net.flush_updates(&mut updates);
         }
         net
     }
@@ -180,12 +186,14 @@ where
             &errors.hidden_layers[0],
         );
     }
-    fn flush_updates(&mut self, updates: &mut Self) {
-        self.input_layer.flush_updates(&mut updates.input_layer);
+    fn flush_updates(&mut self, updates: &mut Self, batch_size: u16) {
+        self.input_layer
+            .flush_updates(&mut updates.input_layer, batch_size);
         for i in 0..MIDDLE_LAYERS {
-            self.middle_layers[i].flush_updates(&mut updates.middle_layers[i]);
+            self.middle_layers[i].flush_updates(&mut updates.middle_layers[i], batch_size);
         }
-        self.output_layer.flush_updates(&mut updates.output_layer);
+        self.output_layer
+            .flush_updates(&mut updates.output_layer, batch_size);
     }
     fn compute(&self, input: &[u8; IMAGE_SIZE]) -> Activations<LAYER_SIZE, { MIDDLE_LAYERS + 1 }> {
         let mut hidden_layers = [[0.; LAYER_SIZE]; MIDDLE_LAYERS + 1];
@@ -213,9 +221,9 @@ where
             .enumerate()
             .for_each(|(i, (error, &act))| {
                 *error = if i == label as usize {
-                    act.min(256.) - 256.
+                    act.min(16.) - 16.
                 } else {
-                    act.max(-256.) + 256.
+                    act.max(-16.) + 16.
                 };
             });
         let mut hidden_layers = [[0.; LAYER_SIZE]; MIDDLE_LAYERS + 1];
@@ -265,6 +273,25 @@ fn propagate_errors<const BACK_LAYER_SIZE: usize, const FRONT_LAYER_SIZE: usize>
         });
 }
 
+#[allow(dead_code)]
+fn print_image(input: &[u8; IMAGE_SIZE]) {
+    for i in 0..28 {
+        for j in 0..28 {
+            let pixel = input[i * 28 + j];
+            if pixel == 0 {
+                print!(" ");
+            } else if pixel < 64 {
+                print!(".");
+            } else if pixel < 196 {
+                print!("o");
+            } else {
+                print!("@");
+            }
+        }
+        println!();
+    }
+}
+
 fn main() {
     let train_labels = &include_bytes!("../data/train-labels-idx1-ubyte")[8..];
     let train_images = &include_bytes!("../data/train-images-idx3-ubyte")[16..];
@@ -276,7 +303,7 @@ fn main() {
         .copied()
         .zip_eq(train_images.as_chunks().0)
         .collect();
-    let nn = NeuralNet::<32, 1>::train(data, 10);
+    let nn = NeuralNet::<16, 1>::train(data, 4);
 
     let errors = test_labels
         .iter()
