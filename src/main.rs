@@ -17,74 +17,84 @@ struct Node<const INPUT_SIZE: usize> {
     bias: f32,
 }
 
-impl<const INPUT_SIZE: usize> Node<INPUT_SIZE> {
-    fn zeros() -> Self {
-        Self {
-            weights: [0.; INPUT_SIZE],
-            bias: 0.,
-        }
-    }
-    fn random() -> Self {
-        Self {
-            weights: array::from_fn(|_| rand::thread_rng().gen_range((-1.)..1.)),
-            bias: rand::thread_rng().gen_range((-1.)..1.),
-        }
-    }
-    fn compute(&self, input: &[f32; INPUT_SIZE]) -> f32 {
-        let sum: f32 = izip!(input, &self.weights)
-            .map(|(&input, &weight)| input.max(0.) * weight)
-            .sum();
-        sum + self.bias
-    }
-    fn add_gradient(&mut self, input: &[f32; INPUT_SIZE], error: f32) {
-        self.bias -= error;
-        izip!(input, &mut self.weights)
-            .filter(|(&input, _)| input > 0.)
-            .for_each(|(&input, weight)| {
-                *weight -= input * error;
-            });
-    }
-    fn apply_gradient(&mut self, updates: &Self, learning_rate: f32) {
-        self.bias += updates.bias * learning_rate;
-        izip!(&mut self.weights, &updates.weights).for_each(|(weight, update)| {
-            *weight += *update * learning_rate;
-        });
-    }
-    fn abs_sum(&self) -> f32 {
-        self.bias.abs() + self.weights.iter().map(|&weight| weight.abs()).sum::<f32>()
-    }
-}
-
 struct Layer<const INPUT_SIZE: usize, const OUTPUT_SIZE: usize> {
     nodes: [Node<INPUT_SIZE>; OUTPUT_SIZE],
+}
+
+fn random_param() -> f32 {
+    rand::thread_rng().gen_range((-1.)..1.)
 }
 
 impl<const INPUT_SIZE: usize, const OUTPUT_SIZE: usize> Layer<INPUT_SIZE, OUTPUT_SIZE> {
     fn zeros() -> Self {
         Self {
-            nodes: array::from_fn(|_| Node::zeros()),
+            nodes: array::from_fn(|_| Node {
+                weights: [0.; INPUT_SIZE],
+                bias: 0.,
+            }),
         }
     }
     fn random() -> Self {
         Self {
-            nodes: array::from_fn(|_| Node::random()),
+            nodes: array::from_fn(|_| Node {
+                weights: array::from_fn(|_| random_param()),
+                bias: random_param(),
+            }),
         }
     }
     fn compute(&self, input: &[f32; INPUT_SIZE]) -> [f32; OUTPUT_SIZE] {
-        array::from_fn(|i| self.nodes[i].compute(input))
+        array::from_fn(|i| {
+            let node = &self.nodes[i];
+            let sum: f32 = izip!(input, &node.weights)
+                .map(|(&input, &weight)| input.max(0.) * weight)
+                .sum();
+            sum + node.bias
+        })
     }
     fn add_gradient(&mut self, input: &[f32; INPUT_SIZE], error: &[f32; OUTPUT_SIZE]) {
         izip!(&mut self.nodes, error).for_each(|(node, &error)| {
-            node.add_gradient(input, error);
+            {
+                node.bias -= error;
+                izip!(input, &mut node.weights).for_each(|(&input, weight)| {
+                    *weight -= input.max(0.) * error;
+                });
+            };
         });
     }
     fn apply_gradient(&mut self, updates: &Self, learning_rate: f32) {
-        izip!(&mut self.nodes, &updates.nodes).for_each(|(node, update)| {
-            node.apply_gradient(update, learning_rate);
+        izip!(&mut self.nodes, &updates.nodes).for_each(|(node, updates)| {
+            {
+                node.bias += updates.bias * learning_rate;
+                izip!(&mut node.weights, &updates.weights).for_each(|(weight, update)| {
+                    *weight += *update * learning_rate;
+                });
+            };
+        });
+    }
+    fn propagate_errors(
+        &self,
+        back_errors: &mut [f32; INPUT_SIZE],
+        front_errors: &[f32; OUTPUT_SIZE],
+        back_activations: &[f32; INPUT_SIZE],
+    ) {
+        izip!(&self.nodes, front_errors).for_each(|(node, output_error)| {
+            izip!(&node.weights, &mut *back_errors).for_each(|(weight, input_error)| {
+                *input_error += weight * output_error;
+            });
+        });
+        izip!(back_errors, back_activations).for_each(|(error, activation)| {
+            if activation <= &0. {
+                *error = 0.;
+            }
         });
     }
     fn abs_sum(&self) -> f32 {
-        self.nodes.iter().map(Node::abs_sum).sum()
+        self.nodes
+            .iter()
+            .map(|node| {
+                node.bias.abs() + node.weights.iter().map(|&weight| weight.abs()).sum::<f32>()
+            })
+            .sum()
     }
 }
 
@@ -107,6 +117,17 @@ impl<const LAYER_SIZE: usize, const HIDDEN_LAYERS: usize> Activations<LAYER_SIZE
             .position_max_by(|a, b| a.partial_cmp(b).expect("NaN in output layer"))
             .expect("Empty output layer")
             == label as usize
+    }
+    fn output_errors(&self, label: u8) -> [f32; 10] {
+        let layer_size = f32::from(u16::try_from(LAYER_SIZE).unwrap());
+        array::from_fn(|i| {
+            let act = self.output_layer[i];
+            if i == label as usize {
+                10. * (act.min(layer_size) - layer_size)
+            } else {
+                act.max(0.)
+            }
+        })
     }
 }
 
@@ -152,9 +173,9 @@ where
         activations: &Activations<LAYER_SIZE, { MIDDLE_LAYERS + 1 }>,
         errors: &Activations<LAYER_SIZE, { MIDDLE_LAYERS + 1 }>,
     ) {
-        self.output_layer.add_gradient(
-            &activations.hidden_layers[MIDDLE_LAYERS],
-            &errors.output_layer,
+        self.input_layer.add_gradient(
+            &input.map(|b| f32::from(b) / 256.),
+            &errors.hidden_layers[0],
         );
         izip!(
             &mut self.middle_layers,
@@ -164,9 +185,9 @@ where
         .for_each(|(layer, activations, errors)| {
             layer.add_gradient(activations, errors);
         });
-        self.input_layer.add_gradient(
-            &input.map(|b| f32::from(b) / 256.),
-            &errors.hidden_layers[0],
+        self.output_layer.add_gradient(
+            &activations.hidden_layers[MIDDLE_LAYERS],
+            &errors.output_layer,
         );
     }
     fn abs_sum(&self) -> f32 {
@@ -203,30 +224,18 @@ where
         activations: &Activations<LAYER_SIZE, { MIDDLE_LAYERS + 1 }>,
         label: u8,
     ) -> Activations<LAYER_SIZE, { MIDDLE_LAYERS + 1 }> {
-        let layer_size = f32::from(u16::try_from(LAYER_SIZE).unwrap());
-        let output_layer = array::from_fn(|i| {
-            let act = activations.output_layer[i];
-            if i == label as usize {
-                10. * (act.min(layer_size) - layer_size)
-            } else {
-                act.max(0.)
-            }
-        });
+        let output_layer = activations.output_errors(label);
         let mut hidden_layers = [[0.; LAYER_SIZE]; MIDDLE_LAYERS + 1];
-        propagate_errors(
+        self.output_layer.propagate_errors(
             &mut hidden_layers[MIDDLE_LAYERS],
             &output_layer,
-            &self.output_layer,
             &activations.hidden_layers[MIDDLE_LAYERS],
         );
         for i in (0..MIDDLE_LAYERS).rev() {
-            let [back_errors, front_errors] = hidden_layers
-                .get_many_mut([i, i + 1])
-                .expect("middle layer out of bounds");
-            propagate_errors(
+            let [back_errors, front_errors] = hidden_layers.get_many_mut([i, i + 1]).unwrap();
+            self.middle_layers[i].propagate_errors(
                 back_errors,
                 front_errors,
-                &self.middle_layers[i],
                 &activations.hidden_layers[i],
             );
         }
@@ -235,21 +244,6 @@ where
             output_layer,
         }
     }
-}
-
-fn propagate_errors<const BACK_LAYER_SIZE: usize, const FRONT_LAYER_SIZE: usize>(
-    back_errors: &mut [f32; BACK_LAYER_SIZE],
-    front_errors: &[f32; FRONT_LAYER_SIZE],
-    nn_layer: &Layer<BACK_LAYER_SIZE, FRONT_LAYER_SIZE>,
-    back_activations: &[f32; BACK_LAYER_SIZE],
-) {
-    izip!(&nn_layer.nodes, front_errors).for_each(|(node, output_error)| {
-        izip!(&node.weights, &mut *back_errors, back_activations)
-            .filter(|(_, _, &activation)| activation > 0.)
-            .for_each(|(weight, input_error, _)| {
-                *input_error += weight * output_error;
-            });
-    });
 }
 
 #[allow(dead_code)]
@@ -278,7 +272,7 @@ fn main() {
     let test_images = &include_bytes!("../data/t10k-images-idx3-ubyte")[16..];
 
     let data = izip!(train_labels.iter().copied(), train_images.as_chunks().0).collect::<Vec<_>>();
-    let nn = NeuralNet::<64, 1>::train(data, 20);
+    let nn = NeuralNet::<64, 1>::train(data, 1);
 
     let errors = izip!(test_labels, test_images.as_chunks().0)
         .filter(|(&label, image)| !nn.compute(image).output_layer_is_correct(label))
@@ -286,8 +280,5 @@ fn main() {
     #[allow(clippy::cast_precision_loss)]
     let error_rate = errors as f64 * 100. / test_labels.len() as f64;
 
-    println!(
-        "Errors: {errors}\nTotal: {total}\nError rate: {error_rate:.2}%",
-        total = test_labels.len(),
-    );
+    println!("Error rate: {error_rate:.2}%",);
 }
