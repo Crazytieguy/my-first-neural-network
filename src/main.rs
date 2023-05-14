@@ -61,13 +61,15 @@ impl<const INPUT_SIZE: usize, const OUTPUT_SIZE: usize> Layer<INPUT_SIZE, OUTPUT
             };
         });
     }
-    fn apply_gradient(&mut self, updates: &Self, learning_rate: f32) {
-        izip!(&mut self.nodes, &updates.nodes).for_each(|(node, updates)| {
+    fn apply_gradient(&mut self, gradient: &Self, learning_rate: f32) {
+        izip!(&mut self.nodes, &gradient.nodes).for_each(|(node, node_gradient)| {
             {
-                node.bias += updates.bias * learning_rate;
-                izip!(&mut node.weights, &updates.weights).for_each(|(weight, update)| {
-                    *weight += *update * learning_rate;
-                });
+                node.bias += node_gradient.bias * learning_rate;
+                izip!(&mut node.weights, &node_gradient.weights).for_each(
+                    |(weight, weight_gradient)| {
+                        *weight += *weight_gradient * learning_rate;
+                    },
+                );
             };
         });
     }
@@ -195,15 +197,17 @@ where
             + self.middle_layers.iter().map(Layer::abs_sum).sum::<f32>()
             + self.output_layer.abs_sum()
     }
-    fn apply_gradient(&mut self, updates: &Self) {
-        let learning_rate = (10. / updates.abs_sum()).min(1.);
+    fn apply_gradient(&mut self, gradient: &Self) {
+        let learning_rate = (10. / gradient.abs_sum()).min(1.);
         self.input_layer
-            .apply_gradient(&updates.input_layer, learning_rate);
-        izip!(&mut self.middle_layers, &updates.middle_layers,).for_each(|(layer, update)| {
-            layer.apply_gradient(update, learning_rate);
-        });
+            .apply_gradient(&gradient.input_layer, learning_rate);
+        izip!(&mut self.middle_layers, &gradient.middle_layers,).for_each(
+            |(layer, layer_gradient)| {
+                layer.apply_gradient(layer_gradient, learning_rate);
+            },
+        );
         self.output_layer
-            .apply_gradient(&updates.output_layer, learning_rate);
+            .apply_gradient(&gradient.output_layer, learning_rate);
     }
     fn compute(&self, input: &[u8; IMAGE_SIZE]) -> Activations<LAYER_SIZE, { MIDDLE_LAYERS + 1 }> {
         let mut hidden_layers = [[0.; LAYER_SIZE]; MIDDLE_LAYERS + 1];
