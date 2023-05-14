@@ -90,11 +90,16 @@ impl<const INPUT_SIZE: usize, const OUTPUT_SIZE: usize> Layer<INPUT_SIZE, OUTPUT
             }
         });
     }
-    fn abs_sum(&self) -> f32 {
+    fn gradient_size_squared(&self) -> f32 {
         self.nodes
             .iter()
             .map(|node| {
-                node.bias.abs() + node.weights.iter().map(|&weight| weight.abs()).sum::<f32>()
+                node.bias.powi(2)
+                    + node
+                        .weights
+                        .iter()
+                        .map(|&weight| weight.powi(2))
+                        .sum::<f32>()
             })
             .sum()
     }
@@ -192,13 +197,17 @@ where
             &errors.output_layer,
         );
     }
-    fn abs_sum(&self) -> f32 {
-        self.input_layer.abs_sum()
-            + self.middle_layers.iter().map(Layer::abs_sum).sum::<f32>()
-            + self.output_layer.abs_sum()
+    fn gradient_size_squared(&self) -> f32 {
+        self.input_layer.gradient_size_squared()
+            + self
+                .middle_layers
+                .iter()
+                .map(Layer::gradient_size_squared)
+                .sum::<f32>()
+            + self.output_layer.gradient_size_squared()
     }
     fn apply_gradient(&mut self, gradient: &Self) {
-        let learning_rate = (10. / gradient.abs_sum()).min(1.);
+        let learning_rate = (10. / gradient.gradient_size_squared().sqrt()).min(1.);
         self.input_layer
             .apply_gradient(&gradient.input_layer, learning_rate);
         izip!(&mut self.middle_layers, &gradient.middle_layers,).for_each(
@@ -276,7 +285,7 @@ fn main() {
     let test_images = &include_bytes!("../data/t10k-images-idx3-ubyte")[16..];
 
     let data = izip!(train_labels.iter().copied(), train_images.as_chunks().0).collect::<Vec<_>>();
-    let nn = NeuralNet::<64, 1>::train(data, 1);
+    let nn = NeuralNet::<800, 0>::train(data, 40);
 
     let errors = izip!(test_labels, test_images.as_chunks().0)
         .filter(|(&label, image)| !nn.compute(image).output_layer_is_correct(label))
