@@ -17,7 +17,7 @@ struct Node<const INPUT_SIZE: usize> {
     bias: f32,
 }
 
-struct Layer<const INPUT_SIZE: usize, const OUTPUT_SIZE: usize> {
+struct Layer<const INPUT_SIZE: usize, const OUTPUT_SIZE: usize, const RELU: bool> {
     nodes: [Node<INPUT_SIZE>; OUTPUT_SIZE],
 }
 
@@ -25,7 +25,9 @@ fn random_param() -> f32 {
     rand::thread_rng().gen_range((-1.)..1.)
 }
 
-impl<const INPUT_SIZE: usize, const OUTPUT_SIZE: usize> Layer<INPUT_SIZE, OUTPUT_SIZE> {
+impl<const INPUT_SIZE: usize, const OUTPUT_SIZE: usize, const RELU: bool>
+    Layer<INPUT_SIZE, OUTPUT_SIZE, RELU>
+{
     fn zeros() -> Self {
         Self {
             nodes: array::from_fn(|_| Node {
@@ -46,9 +48,13 @@ impl<const INPUT_SIZE: usize, const OUTPUT_SIZE: usize> Layer<INPUT_SIZE, OUTPUT
         array::from_fn(|i| {
             let node = &self.nodes[i];
             let sum: f32 = izip!(input, &node.weights)
-                .map(|(&input, &weight)| input.max(0.) * weight)
+                .map(|(&input, &weight)| input * weight)
                 .sum();
-            sum + node.bias
+            if RELU {
+                (sum + node.bias).max(0.)
+            } else {
+                sum + node.bias
+            }
         })
     }
     fn add_gradient(&mut self, input: &[f32; INPUT_SIZE], error: &[f32; OUTPUT_SIZE]) {
@@ -56,7 +62,7 @@ impl<const INPUT_SIZE: usize, const OUTPUT_SIZE: usize> Layer<INPUT_SIZE, OUTPUT
             {
                 node.bias -= error;
                 izip!(input, &mut node.weights).for_each(|(&input, weight)| {
-                    *weight -= input.max(0.) * error;
+                    *weight -= input * error;
                 });
             };
         });
@@ -106,9 +112,9 @@ impl<const INPUT_SIZE: usize, const OUTPUT_SIZE: usize> Layer<INPUT_SIZE, OUTPUT
 }
 
 struct NeuralNet<const LAYER_SIZE: usize, const MIDDLE_LAYERS: usize> {
-    input_layer: Layer<IMAGE_SIZE, LAYER_SIZE>,
-    middle_layers: [Layer<LAYER_SIZE, LAYER_SIZE>; MIDDLE_LAYERS],
-    output_layer: Layer<LAYER_SIZE, 10>,
+    input_layer: Layer<IMAGE_SIZE, LAYER_SIZE, true>,
+    middle_layers: [Layer<LAYER_SIZE, LAYER_SIZE, true>; MIDDLE_LAYERS],
+    output_layer: Layer<LAYER_SIZE, 10, false>,
 }
 
 #[derive(Debug)]
