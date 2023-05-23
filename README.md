@@ -1,5 +1,5 @@
 # My First Neural Network!
 
-A toy neural network for learning purposes. I wanted to implement it from scratch to make sure I really understand how it works.
+A neural network implemented from scratch for learning purposes.
 
 Uses the MNIST dataset.
